@@ -1,0 +1,59 @@
+{
+	"memory": [
+		{
+			"name": "SRAM1",
+			"start": "0x10000000",
+			"length": "128k"
+		},
+		{
+			"name": "SRAM2",
+			"start": "0x10020000",
+			"length": "128k"
+		},
+		{
+			"name": "SRAM3",
+			"start": "0x10040000",
+			"length": "64k"
+		},
+		{
+			"name": "SRAM4",
+			"start": "0x10050000",
+			"length": "64k"
+		},
+		{
+			"name": "SYSRAM",
+			"start": "0x2ffc0000",
+			"length": "256k"
+		},
+		{
+			"name": "SRAM1 alias",
+			"start": "0x3000 0000",
+			"length": "128k"
+		},
+		{
+			"name": "SRAM2 alias",
+			"start": "0x3002 0000",
+			"length": "128k"
+		},
+		{
+			"name": "SRAM3 alias",
+			"start": "0x3004 0000",
+			"length": "64k"
+		},
+		{
+			"name": "SRAM4 alias",
+			"start": "0x3005 0000",
+			"length": "64k"
+		},
+		{
+			"name": "RETRAM",
+			"start": "0x3800 0000",
+			"length": "64k"
+		},
+		{
+			"name": "DDR",
+			"start": "0xc000 0000",
+			"end": "0xe000 0000"
+		}
+	]
+}

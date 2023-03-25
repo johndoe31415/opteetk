@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+#	opteetk - Tools for easier debugging of OP-TEE
+#	Copyright (C) 2023-2023 Johannes Bauer
+#
+#	This file is part of opteetk.
+#
+#	opteetk is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	opteetk is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with opteetk; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import sys
+import os
+import json
+import contextlib
+import subprocess
+import multiprocessing
+from FriendlyArgumentParser import FriendlyArgumentParser
+from WorkDir import WorkDir
+
+class OpteeBuilder():
+	def __init__(self, args):
+		self._args = args
+		with open(self._args.environment) as f:
+			self._env = json.load(f)
+
+	@property
+	def target_dir(self):
+		return os.path.realpath(self._env["target_dir"])
+
+	@property
+	def build_dir(self):
+		return f"{self.target_dir}/build"
+
+	@property
+	def gdb_command_file(self):
+		return f"{self.build_dir}/gdb_commands.txt"
+
+	def _create_target(self):
+		if os.path.isdir(self.target_dir):
+			return
+		os.makedirs(self.target_dir)
+		with WorkDir(self.target_dir):
+			cmd = [ "repo", "init", "-u", "https://github.com/OP-TEE/manifest.git" ]
+			if "optee_version" in self._env:
+				cmd += [ "-b", self._env["optee_version"] ]
+			subprocess.check_call(cmd)
+			subprocess.check_call([ "repo", "sync" ])
+			with WorkDir("build"):
+				subprocess.check_call([ "make", "toolchains" ])
+
+	def _create_link(self, link_name, src):
+		with contextlib.suppress(FileExistsError):
+			os.makedirs(self._args.link_dir)
+		dst = f"{self._args.link_dir}/{link_name}"
+		if os.path.islink(dst):
+			os.unlink(dst)
+		if not os.path.exists(link_name):
+			os.symlink(os.path.realpath(src), dst)
+
+	def _create_links(self):
+		self._create_link("out_conf.mk", f"{self.target_dir}/optee_os/out/arm/conf.mk")
+		self._create_link("arm_core", f"{self.target_dir}/optee_os/out/arm/core")
+		self._create_link("binaries", f"{self.target_dir}/out/bin")
+		self._create_link("in_conf.mk", f"{self.target_dir}/optee_os/core/arch/arm/plat-vexpress/conf.mk")
+
+	def _run_qemu(self):
+		opts = self._env.get("run_opts", { })
+		opts = [ f"{key}={value}" for (key, value) in opts.items() ]
+		opts.sort()
+		cmd = [ "make" ]
+		if not self._args.no_parallel:
+			cmd += [ f"-j{multiprocessing.cpu_count()}" ]
+		cmd += [ "run" ] + opts
+		with WorkDir(self.build_dir):
+			subprocess.check_call(cmd)
+
+	def _start_gdb(self):
+		cmd = [ "gnome-terminal", "--tab", "--" ]
+		with open(self.gdb_command_file, "w") as f:
+			print("define conn", file = f)
+			print("target remote localhost:1234", file = f)
+			print("end", file = f)
+			print(file = f)
+			print(f"symbol-file {self.target_dir}/optee_os/out/arm/core/tee.elf", file = f)
+			print("set remotetimeout 300", file = f)
+			print("conn", file = f)
+
+		cmd += [ f"{self.target_dir}/toolchains/aarch32/bin/arm-linux-gnueabihf-gdb", "-q", "-x", self.gdb_command_file ]
+		subprocess.call(cmd)
+
+	def run(self):
+		self._create_target()
+		self._create_links()
+		if self._args.attach_gdb:
+			self._start_gdb()
+		self._run_qemu()
+
+parser = FriendlyArgumentParser(description = "Setup an OP-TEE QEMU build envrionment.")
+parser.add_argument("--no-parallel", action = "store_true", help = "Do not use multiple CPUs during 'make run'.")
+parser.add_argument("-g", "--attach-gdb", action = "store_true")
+parser.add_argument("-l", "--link-dir", metavar = "dirname", default = "links", help = "Directory to create symbolic links to. Defaults to %(default)s.")
+parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
+parser.add_argument("environment", help = "Configuration file that specifies the OP-TEE environment.")
+args = parser.parse_args(sys.argv[1:])
+
+builder = OpteeBuilder(args)
+builder.run()

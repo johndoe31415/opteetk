@@ -1,0 +1,17 @@
+{
+	"optee_version": "3.16.0",
+	"target_dir":	"/tmp/optee2",
+	"run_opts": {
+		"BR2_PACKAGE_OPENSC": "y",
+		"BR2_PACKAGE_LIBOPENSSL": "y",
+		"BR2_PACKAGE_LIBOPENSSL_BIN": "y",
+		"BR2_PACKAGE_LIBP11": "y",
+		"CFG_CORE_ASLR": "n",
+		"CFG_CORE_LOG": "1",
+		"CFG_TEE_CORE_LOG_LEVEL": "1",
+		"CFG_TEE_TA_LOG_LEVEL": "1",
+		"CFG_TEE_CORE_DEBUG": "n",
+		"CFG_WITH_PAGER": "y",
+		"CFG_CORE_TZSRAM_EMUL_SIZE": "262144"
+	}
+}

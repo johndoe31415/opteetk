@@ -1,0 +1,9 @@
+{
+	"memory": [
+		{
+			"name": "TZDRAM",
+			"start": "0xe100000",
+			"length": "0xf00000"
+		}
+	]
+}
