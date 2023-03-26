@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+#	opteetk - Tools for easier debugging of OP-TEE
+#	Copyright (C) 2023-2023 Johannes Bauer
+#
+#	This file is part of opteetk.
+#
+#	opteetk is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	opteetk is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with opteetk; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import json
+import re
+
+with open("multitest-log.json") as f:
+	content = json.load(f)
+
+datapts = [
+	"list1",
+	"list2",
+	"initso",
+	"init",
+	"mkecc1",
+	"mkecc2",
+]
+
+
+all_data = { }
+realtime_re = re.compile(r"^real (?P<rtime>\d+\.\d+)$", flags = re.MULTILINE)
+for datapt in content:
+	sram_kib = int(datapt["config"]["run_opts"]["CFG_CORE_TZSRAM_EMUL_SIZE"]) // 1024
+	rtimes = [ ]
+	for result in realtime_re.finditer(datapt["result"].replace("\r\n", "\n")):
+		rtime = float(result.groupdict()["rtime"])
+		rtimes.append(rtime)
+	assert(len(rtimes) == len(datapts))
+	rtimes = { name: rtime for (name, rtime) in zip(datapts, rtimes) }
+	all_data[sram_kib] = rtimes
+
+colors = {
+	0: "2980b9",
+	1: "c0392b",
+	2: "27ae60",
+	3: "8e44ad",
+}
+include = [ "mkecc1", "mkecc2" ]
+print("set terminal pngcairo size 1920,1080 font \"Lato,20\"")
+print("set output \"profile_keygen.png\"")
+print("set xtics 8")
+print("set grid")
+print("set xlabel \"SRAM / kiB\"")
+print("set ylabel \"time/secs\"")
+plots = [ f"'-' using 1:2 with lines title \"{name}\" lc \"#{colors[i]}\" linewidth 2" for (i, name) in enumerate(include) ]
+print(f"plot {', '.join(plots)}")
+
+print()
+
+for name in include:
+	for sram_kib in sorted(all_data):
+		plot_times = [ sram_kib ] + [ rtimes[name] for name in include ]
+		print(f"{sram_kib} {all_data[sram_kib][name]}")
+	print("end")
+	print()

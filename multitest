@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+#	opteetk - Tools for easier debugging of OP-TEE
+#	Copyright (C) 2023-2023 Johannes Bauer
+#
+#	This file is part of opteetk.
+#
+#	opteetk is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	opteetk is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with opteetk; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import os
+import sys
+import json
+import copy
+import tempfile
+import subprocess
+import socket
+import time
+import signal
+import traceback
+import datetime
+import enum
+
+from FriendlyArgumentParser import FriendlyArgumentParser
+
+class ConnectionState(enum.IntEnum):
+	Booting = 1
+	LoggingIn = 2
+	Processing = 3
+
+class OpteeMultiRunner():
+	def __init__(self, args):
+		self._args = args
+		with open(self._args.environment) as f:
+			self._config = json.load(f)
+
+	def _connect(self, host, port, retry_count = 120):
+		for i in range(retry_count):
+			try:
+				conn = socket.create_connection((host, port))
+				conn.setblocking(False)
+				return conn
+			except ConnectionRefusedError as e:
+				print(e)
+				time.sleep(1)
+		raise ConnectionRefusedError(f"Count not connect to {host}:{port} after {retry_count} retries.")
+
+	def _read_sock(self, conn):
+		try:
+			data = conn.recv(1024)
+			if self._args.verbose >= 3:
+				print(data, file = sys.stderr)
+			return data
+		except BlockingIOError:
+			return b""
+
+	def _log_output(self, text):
+		log_entry = {
+			"start_utc": self._session["start_ts"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+			"end_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+			"command": self._args.command,
+			"config": self._session["config_data"],
+			"result": text,
+		}
+		try:
+			with open(self._args.logfile_json) as f:
+				logfile = json.load(f)
+		except FileNotFoundError:
+			logfile = [ ]
+		logfile.append(log_entry)
+		with open(self._args.logfile_json, "w") as f:
+			json.dump(logfile, f)
+
+	def _run_config(self, config_data, config_filename):
+
+		self._session = {
+			"config_data": config_data,
+			"start_ts": datetime.datetime.utcnow(),
+		}
+		qemu_proc = None
+		state = ConnectionState.Booting
+		try:
+			cmd = [ "./run-optee" ]
+			cmd += [ "--autorun-cpu" ]
+			cmd += [ "--serial-config", "listen" ]
+			if self._args.no_rebuild:
+				cmd += [ "--no-rebuild" ]
+			if self._args.verbose > 0:
+				cmd += [ f"-{'v' * self._args.verbose}" ]
+			cmd += [ config_filename ]
+
+			print("Starting QEMU")
+			qemu_proc = subprocess.Popen(cmd)
+			if self._args.verbose >= 2:
+				print("Connecting to normal world on port 54320")
+			normal_fd = self._connect("localhost", 54320)
+			if self._args.verbose >= 2:
+				print("Connecting to secure world on port 54321")
+			secure_fd = self._connect("localhost", 54321)
+
+			if self._args.verbose >= 2:
+				print("System booting, waiting to receive data.")
+			normal_buffer = bytearray()
+			while True:
+				normal_data = self._read_sock(normal_fd)
+				secure_data = self._read_sock(secure_fd)
+				normal_buffer += normal_data
+				if (len(normal_data) == 0) and (len(secure_data) == 0):
+					time.sleep(0.5)
+
+				if (state == ConnectionState.Booting) and normal_buffer.endswith(b"buildroot login: "):
+					# Ready to login as root
+					if self._args.verbose >= 1:
+						print("Trying to log in.", file = sys.stderr)
+					normal_fd.send(b"root\r\n")
+					normal_buffer = bytearray()
+					state = ConnectionState.LoggingIn
+				elif (state == ConnectionState.LoggingIn) and normal_buffer == b"root\r\n# ":
+					# Logged in, now do our thing.
+					if self._args.verbose >= 1:
+						print("Logged in successully.", file = sys.stderr)
+					normal_fd.send((f"{self._args.command}; echo '>FINISHED<'\r\n").encode())
+					normal_buffer = bytearray()
+					state = ConnectionState.Processing
+				elif (state == ConnectionState.Processing) and normal_buffer.endswith(b">FINISHED<\r\n# \r\n# "):
+
+					index = normal_buffer.find(b"\r\n")
+					normal_buffer = normal_buffer[index + 2 : -20]
+					decoded_buffer = normal_buffer.decode()
+
+					if self._args.verbose >= 1:
+						print("Finished.", file = sys.stderr)
+					self._log_output(decoded_buffer)
+					normal_fd.shutdown(socket.SHUT_RDWR)
+					normal_fd.close()
+					secure_fd.shutdown(socket.SHUT_RDWR)
+					secure_fd.close()
+					break
+		finally:
+			if self._args.verbose >= 2:
+				print(f"Killing run-optee process PID {qemu_proc.pid}")
+			if qemu_proc is not None:
+				qemu_proc.terminate()
+				qemu_proc.wait()
+				print(f"Done.")
+
+	def _run_child_processes(self):
+		for embedded_sram_kib in range(256, 512, 4):
+			config = copy.deepcopy(self._config)
+			config["run_opts"]["CFG_CORE_TZSRAM_EMUL_SIZE"] = str(1024 * embedded_sram_kib)
+			with tempfile.NamedTemporaryFile(prefix = "optee_multirun_", suffix = ".json", mode = "w") as f:
+				json.dump(config, f)
+				f.flush()
+				self._run_config(config, f.name)
+				time.sleep(1)
+
+	def run(self):
+		# Ensure our spawned children also are killed when the main process
+		# exist; this prevents accidental QEMU instances floating about
+		os.setpgrp()
+		try:
+			self._run_child_processes()
+		except Exception as e:
+			traceback.print_exc()
+			os.killpg(0, signal.SIGTERM)
+		finally:
+			os.killpg(0, signal.SIGTERM)
+
+parser = FriendlyArgumentParser(description = "Automatically build different OP-TEE configurations and run them on QEMU sequentially, collecting results.")
+parser.add_argument("-l", "--logfile-json", metavar = "filename", default = "multitest-log.json", help = "Log all results to this JSON file. Defaults to %(default)s.")
+parser.add_argument("-c", "--command", metavar = "cmdline", default = "time ls /bin", help = "Run this command/commands inside QEMU root console. Defaults to \"%(default)s\".")
+parser.add_argument("-n", "--no-rebuild", action = "store_true", help = "Do not rebuild OP-TEE every time.")
+parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
+parser.add_argument("environment", help = "Configuration file that specifies the OP-TEE environment.")
+args = parser.parse_args(sys.argv[1:])
+
+runner = OpteeMultiRunner(args)
+runner.run()
+

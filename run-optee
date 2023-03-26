@@ -22,12 +22,19 @@
 
 import sys
 import os
+import traceback
 import json
 import contextlib
 import subprocess
+import traceback
+import signal
 import multiprocessing
+import ctypes
 from FriendlyArgumentParser import FriendlyArgumentParser
 from WorkDir import WorkDir
+
+_PR_SET_PDEATHSIG = 1
+_libc = ctypes.CDLL("libc.so.6")
 
 class OpteeBuilder():
 	def __init__(self, args):
@@ -44,6 +51,10 @@ class OpteeBuilder():
 		return f"{self.target_dir}/build"
 
 	@property
+	def binary_dir(self):
+		return f"{self.target_dir}/out/bin"
+
+	@property
 	def gdb_command_file(self):
 		return f"{self.build_dir}/gdb_commands.txt"
 
@@ -55,10 +66,10 @@ class OpteeBuilder():
 			cmd = [ "repo", "init", "-u", "https://github.com/OP-TEE/manifest.git" ]
 			if "optee_version" in self._env:
 				cmd += [ "-b", self._env["optee_version"] ]
-			subprocess.check_call(cmd)
-			subprocess.check_call([ "repo", "sync" ])
+			subprocess.check_call(cmd, preexec_fn = self._set_pdeathsig)
+			subprocess.check_call([ "repo", "sync" ], preexec_fn = self._set_pdeathsig)
 			with WorkDir("build"):
-				subprocess.check_call([ "make", "toolchains" ])
+				subprocess.check_call([ "make", "toolchains" ], preexec_fn = self._set_pdeathsig)
 
 	def _create_link(self, link_name, src):
 		with contextlib.suppress(FileExistsError):
@@ -72,19 +83,65 @@ class OpteeBuilder():
 	def _create_links(self):
 		self._create_link("out_conf.mk", f"{self.target_dir}/optee_os/out/arm/conf.mk")
 		self._create_link("arm_core", f"{self.target_dir}/optee_os/out/arm/core")
-		self._create_link("binaries", f"{self.target_dir}/out/bin")
+		self._create_link("binaries", self.binary_dir)
 		self._create_link("in_conf.mk", f"{self.target_dir}/optee_os/core/arch/arm/plat-vexpress/conf.mk")
+		self._create_link("overlay", f"{self.build_dir}/br-ext/board/qemu/overlay")
 
-	def _run_qemu(self):
+	def _build_qemu(self):
 		opts = self._env.get("run_opts", { })
 		opts = [ f"{key}={value}" for (key, value) in opts.items() ]
 		opts.sort()
 		cmd = [ "make" ]
-		if not self._args.no_parallel:
+		if not self._args.no_parallel_build:
 			cmd += [ f"-j{multiprocessing.cpu_count()}" ]
-		cmd += [ "run" ] + opts
+		cmd += [ "all" ] + opts
 		with WorkDir(self.build_dir):
-			subprocess.check_call(cmd)
+			if self._args.verbose < 3:
+				stdout = subprocess.DEVNULL
+				stderr = subprocess.DEVNULL
+			else:
+				stdout = None
+				stderr = None
+			if self._args.verbose >= 1:
+				print("run-optee: starting build", file = sys.stderr)
+			subprocess.check_call(cmd, preexec_fn = self._set_pdeathsig, stdout = stdout, stderr = stderr)
+			if self._args.verbose >= 1:
+				print("run-optee: build finished", file = sys.stderr)
+
+	def _run_qemu(self):
+		if self._args.internal_run_cmd:
+			with WorkDir(self.build_dir):
+				subprocess.call([ "make", "run-only" ], preexec_fn = self._set_pdeathsig)
+			return
+
+		with WorkDir(self.binary_dir):
+			cmd = [ f"{self.target_dir}/qemu/build/arm-softmmu/qemu-system-arm" ]
+			cmd += [ "-nographic" ]
+			if self._args.serial_config == "default":
+				cmd += [ "-serial", "tcp:localhost:54320" ]
+				cmd += [ "-serial", "tcp:localhost:54321" ]
+			elif self._args.serial_config == "listen":
+				cmd += [ "-serial", "tcp:localhost:54320,server=true" ]
+				cmd += [ "-serial", "tcp:localhost:54321,server=true" ]
+			elif self._args.serial_config == "none":
+				pass
+			else:
+				raise NotImplementedError(self._args.serial_config)
+			cmd += [ "-smp", "2" ]
+			cmd += [ "-s" ]		# Start GDB
+			if not self._args.autorun_cpu:
+				cmd += [ "-S" ]		# Do not start CPU
+			cmd += [ "-machine", "virt,secure=on" ]
+			cmd += [ "-cpu", "cortex-a15" ]
+			cmd += [ "-d", "unimp" ]
+			cmd += [ "-semihosting-config", "enable=on,target=native" ]
+			cmd += [ "-m", "1057" ]
+			cmd += [ "-bios", "bl1.bin" ]
+			cmd += [ "-object", "rng-random,filename=/dev/urandom,id=rng0", "-device", "virtio-rng-pci,rng=rng0,max-bytes=1024,period=1000" ]
+			cmd += [ "-netdev", "user,id=vmnic", "-device", "virtio-net-device,netdev=vmnic" ]
+			if self._args.verbose >= 2:
+				print(f"Starting QEMU: {cmd}")
+			subprocess.call(cmd, preexec_fn = self._set_pdeathsig)
 
 	def _start_gdb(self):
 		cmd = [ "gnome-terminal", "--tab", "--" ]
@@ -98,18 +155,28 @@ class OpteeBuilder():
 			print("conn", file = f)
 
 		cmd += [ f"{self.target_dir}/toolchains/aarch32/bin/arm-linux-gnueabihf-gdb", "-q", "-x", self.gdb_command_file ]
-		subprocess.call(cmd)
+		subprocess.call(cmd, preexec_fn = self._set_pdeathsig)
+
+	def _set_pdeathsig(self):
+		_libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
 
 	def run(self):
+		self._set_pdeathsig()
 		self._create_target()
 		self._create_links()
 		if self._args.attach_gdb:
 			self._start_gdb()
+		if not self._args.no_rebuild:
+			self._build_qemu()
 		self._run_qemu()
 
 parser = FriendlyArgumentParser(description = "Setup an OP-TEE QEMU build envrionment.")
-parser.add_argument("--no-parallel", action = "store_true", help = "Do not use multiple CPUs during 'make run'.")
-parser.add_argument("-g", "--attach-gdb", action = "store_true")
+parser.add_argument("--no-parallel-build", action = "store_true", help = "Do not use multiple CPUs during 'make all'.")
+parser.add_argument("-I", "--internal-run-cmd", action = "store_true", help = "Do not use custom run command, but instead use the 'make run-only' of the OP-TEE build makefile. This renders options like terminal or CPU control useless.")
+parser.add_argument("-s", "--serial-config", choices = [ "default", "listen", "none" ], default = "default", help = "Serial configuration to use. By default, QEMU is a TCP client and attempts to connect to a terminal at ports 54320/54321. If 'listen' is given here, it instead starts a listening TCP server. Can be one of %(choices)s, defaults to %(default)s.")
+parser.add_argument("-r", "--autorun-cpu", action = "store_true", help = "Do not halt CPU at first start, but immediately commence boot.")
+parser.add_argument("-n", "--no-rebuild", action = "store_true", help = "Do not rebuild OP-TEE code, just run QEMU.")
+parser.add_argument("-g", "--attach-gdb", action = "store_true", help = "Attach a debugger immediately in its own terminal.")
 parser.add_argument("-l", "--link-dir", metavar = "dirname", default = "links", help = "Directory to create symbolic links to. Defaults to %(default)s.")
 parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
 parser.add_argument("environment", help = "Configuration file that specifies the OP-TEE environment.")
