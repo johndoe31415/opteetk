@@ -26,14 +26,29 @@ import re
 with open("multitest-log.json") as f:
 	content = json.load(f)
 
+#datapts = [
+#	"list1",
+#	"list2",
+#	"initso",
+#	"init",
+#	"mkecc1",
+#	"mkecc2",
+#]
+#include = [ "mkecc1", "mkecc2" ]
+
 datapts = [
-	"list1",
-	"list2",
 	"initso",
 	"init",
-	"mkecc1",
-	"mkecc2",
+	"mkecc-optee",
+	"mkcrt-optee",
+	"tls-optee1",
+	"tls-optee2",
+	"mkecc-sw",
+	"mkcrt-sw",
+	"tls-sw1",
+	"tls-sw2",
 ]
+include = [ "tls-optee1", "tls-optee2", "tls-sw1", "tls-sw2" ]
 
 
 all_data = { }
@@ -54,7 +69,6 @@ colors = {
 	2: "27ae60",
 	3: "8e44ad",
 }
-include = [ "mkecc1", "mkecc2" ]
 print("set terminal pngcairo size 1920,1080 font \"Lato,20\"")
 print("set output \"profile_keygen.png\"")
 print("set xtics 8")
