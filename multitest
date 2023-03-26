@@ -32,8 +32,12 @@ import signal
 import traceback
 import datetime
 import enum
+import ctypes
 
 from FriendlyArgumentParser import FriendlyArgumentParser
+
+_PR_SET_PDEATHSIG = 1
+_libc = ctypes.CDLL("libc.so.6")
 
 class ConnectionState(enum.IntEnum):
 	Booting = 1
@@ -101,8 +105,9 @@ class OpteeMultiRunner():
 				cmd += [ f"-{'v' * self._args.verbose}" ]
 			cmd += [ config_filename ]
 
-			print("Starting QEMU")
-			qemu_proc = subprocess.Popen(cmd)
+			if self._args.verbose >= 1:
+				print("Starting QEMU process")
+			qemu_proc = subprocess.Popen(cmd, preexec_fn = self._set_pdeathsig)
 			if self._args.verbose >= 2:
 				print("Connecting to normal world on port 54320")
 			normal_fd = self._connect("localhost", 54320)
@@ -156,7 +161,11 @@ class OpteeMultiRunner():
 				qemu_proc.wait()
 				print(f"Done.")
 
-	def _run_child_processes(self):
+
+	def _set_pdeathsig(self):
+		_libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+
+	def run(self):
 		for embedded_sram_kib in range(256, 512, 4):
 			config = copy.deepcopy(self._config)
 			config["run_opts"]["CFG_CORE_TZSRAM_EMUL_SIZE"] = str(1024 * embedded_sram_kib)
@@ -165,18 +174,6 @@ class OpteeMultiRunner():
 				f.flush()
 				self._run_config(config, f.name)
 				time.sleep(1)
-
-	def run(self):
-		# Ensure our spawned children also are killed when the main process
-		# exist; this prevents accidental QEMU instances floating about
-		os.setpgrp()
-		try:
-			self._run_child_processes()
-		except Exception as e:
-			traceback.print_exc()
-			os.killpg(0, signal.SIGTERM)
-		finally:
-			os.killpg(0, signal.SIGTERM)
 
 parser = FriendlyArgumentParser(description = "Automatically build different OP-TEE configurations and run them on QEMU sequentially, collecting results.")
 parser.add_argument("-l", "--logfile-json", metavar = "filename", default = "multitest-log.json", help = "Log all results to this JSON file. Defaults to %(default)s.")
