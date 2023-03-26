@@ -2,4 +2,11 @@
 #
 #
 
-./multitest -c 'time -p pkcs11-tool -L; time -p pkcs11-tool -L; time -p pkcs11-tool --init-token --label mytoken --so-pin 1234567890; time -p pkcs11-tool --label mytoken --login --so-pin 1234567890 --init-pin --pin 12345; time -p pkcs11-tool -l --pin 12345 --keypairgen --key-type EC:prime256v1 --label mykey; time -p pkcs11-tool -l --pin 12345 --keypairgen --key-type EC:prime256v1 --label mykey2' build_environ.json
+./multitest \
+	-c 'time -p pkcs11-tool -L' \
+	-c 'time -p pkcs11-tool -L' \
+	-c 'time -p pkcs11-tool --init-token --label mytoken --so-pin 1234567890' \
+	-c 'time -p pkcs11-tool --label mytoken --login --so-pin 1234567890 --init-pin --pin 12345' \
+	-c 'time -p pkcs11-tool -l --pin 12345 --keypairgen --key-type EC:prime256v1 --label mykey' \
+	-c 'time -p pkcs11-tool -l --pin 12345 --keypairgen --key-type EC:prime256v1 --label mykey2' \
+	build_environ.json

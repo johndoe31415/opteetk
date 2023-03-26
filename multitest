@@ -70,11 +70,19 @@ class OpteeMultiRunner():
 		except BlockingIOError:
 			return b""
 
+	@property
+	def commands(self):
+		if len(self._args.command) == 0:
+			commands = [ "time -p ls /bin" ]
+		else:
+			commands = self._args.command
+		return commands
+
 	def _log_output(self, text):
 		log_entry = {
 			"start_utc": self._session["start_ts"].strftime("%Y-%m-%dT%H:%M:%SZ"),
 			"end_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-			"command": self._args.command,
+			"command": self.commands,
 			"config": self._session["config_data"],
 			"result": text,
 		}
@@ -88,7 +96,6 @@ class OpteeMultiRunner():
 			json.dump(logfile, f)
 
 	def _run_config(self, config_data, config_filename):
-
 		self._session = {
 			"config_data": config_data,
 			"start_ts": datetime.datetime.utcnow(),
@@ -97,6 +104,8 @@ class OpteeMultiRunner():
 		state = ConnectionState.Booting
 		try:
 			cmd = [ "./run-optee" ]
+			if not self._args.direct_commands:
+				cmd += [ "-o", self._tmpdir ]
 			cmd += [ "--autorun-cpu" ]
 			cmd += [ "--serial-config", "listen" ]
 			if self._args.no_rebuild:
@@ -136,7 +145,12 @@ class OpteeMultiRunner():
 					# Logged in, now do our thing.
 					if self._args.verbose >= 1:
 						print("Logged in successully.", file = sys.stderr)
-					normal_fd.send((f"{self._args.command}; echo '>FINISHED<'\r\n").encode())
+					if self._args.direct_commands:
+						command = "; ".join(self.commands)
+						normal_fd.send((f"{command}; echo '>FINISHED<'\r\n").encode())
+					else:
+						normal_fd.send((f"/execute-multitest; echo '>FINISHED<'\r\n").encode())
+
 					normal_buffer = bytearray()
 					state = ConnectionState.Processing
 				elif (state == ConnectionState.Processing) and normal_buffer.endswith(b">FINISHED<\r\n# \r\n# "):
@@ -166,19 +180,28 @@ class OpteeMultiRunner():
 		_libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
 
 	def run(self):
-		for embedded_sram_kib in range(256, 512, 4):
-			config = copy.deepcopy(self._config)
-			config["run_opts"]["CFG_CORE_TZSRAM_EMUL_SIZE"] = str(1024 * embedded_sram_kib)
-			with tempfile.NamedTemporaryFile(prefix = "optee_multirun_", suffix = ".json", mode = "w") as f:
-				json.dump(config, f)
-				f.flush()
-				self._run_config(config, f.name)
-				time.sleep(1)
+		with tempfile.TemporaryDirectory() as self._tmpdir:
+			if not self._args.direct_commands:
+				with open(f"{self._tmpdir}/execute-multitest", "w") as f:
+					print("#!/bin/sh", file = f)
+					print("\n".join(command for command in self.commands), file = f)
+					print(file = f)
+				os.chmod(f"{self._tmpdir}/execute-multitest", 0o755)
+
+			for embedded_sram_kib in range(256, 512, 4):
+				config = copy.deepcopy(self._config)
+				config["run_opts"]["CFG_CORE_TZSRAM_EMUL_SIZE"] = str(1024 * embedded_sram_kib)
+				with tempfile.NamedTemporaryFile(prefix = "optee_multirun_", suffix = ".json", mode = "w") as f:
+					json.dump(config, f)
+					f.flush()
+					self._run_config(config, f.name)
+					time.sleep(1)
 
 parser = FriendlyArgumentParser(description = "Automatically build different OP-TEE configurations and run them on QEMU sequentially, collecting results.")
 parser.add_argument("-l", "--logfile-json", metavar = "filename", default = "multitest-log.json", help = "Log all results to this JSON file. Defaults to %(default)s.")
-parser.add_argument("-c", "--command", metavar = "cmdline", default = "time ls /bin", help = "Run this command/commands inside QEMU root console. Defaults to \"%(default)s\".")
+parser.add_argument("-c", "--command", metavar = "cmdline", default = [ ], action = "append", help = "Run this command/commands inside QEMU root console. Defaults to \"time -p ls /bin\".")
 parser.add_argument("-n", "--no-rebuild", action = "store_true", help = "Do not rebuild OP-TEE every time.")
+parser.add_argument("-d", "--direct-commands", action = "store_true", help = "Directly execute commands via terminal instead of writing a shell script overlay. Advantage: Can quickly change different commands without having to rebuild the image. Disadvantage: Too long commands will not work")
 parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
 parser.add_argument("environment", help = "Configuration file that specifies the OP-TEE environment.")
 args = parser.parse_args(sys.argv[1:])

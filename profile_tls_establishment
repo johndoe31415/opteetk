@@ -1,0 +1,17 @@
+#!/bin/bash
+#
+#
+
+./multitest \
+	-vvv \
+	-c 'time -p pkcs11-tool --init-token --label mytoken --so-pin 1234567890' \
+	-c 'time -p pkcs11-tool --label mytoken --login --so-pin 1234567890 --init-pin --pin 12345' \
+	-c 'time -p pkcs11-tool -l --pin 12345 --keypairgen --key-type EC:prime256v1 --label mykey' \
+	-c 'OPENSSL_CONF=optee_hsm.conf time -p openssl req -new -engine pkcs11 -keyform engine -key label_mykey -subj "/CN=My CSR" -x509 -out mykey_selfsigned_cert.pem' \
+	-c 'echo | OPENSSL_CONF=optee_hsm.conf time -p openssl s_client -engine pkcs11 -connect 10.0.2.2:9876 -cert mykey_selfsigned_cert.pem -keyform engine -key label_mykey' \
+	-c 'echo | OPENSSL_CONF=optee_hsm.conf time -p openssl s_client -engine pkcs11 -connect 10.0.2.2:9876 -cert mykey_selfsigned_cert.pem -keyform engine -key label_mykey' \
+	-c 'time -p openssl ecparam -name secp256r1 -genkey -out sw.key' \
+	-c 'time -p openssl req -new -key sw.key -subj "/CN=My CSR" -x509 -out sw.crt' \
+	-c 'echo | time -p openssl s_client -connect 10.0.2.2:9876 -cert sw.crt -key sw.key' \
+	-c 'echo | time -p openssl s_client -connect 10.0.2.2:9876 -cert sw.crt -key sw.key' \
+	build_environ.json
