@@ -1,0 +1,66 @@
+#!/usr/bin/python3
+#	opteetk - Tools for easier debugging of OP-TEE
+#	Copyright (C) 2023-2023 Johannes Bauer
+#
+#	This file is part of opteetk.
+#
+#	opteetk is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	opteetk is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with opteetk; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import sys
+import json
+import re
+import collections
+import subprocess
+from FriendlyArgumentParser import FriendlyArgumentParser
+
+parser = FriendlyArgumentParser(description = "Simulate a different strategy for pagefaults.")
+parser.add_argument("-p", "--preemption-strategy", choices = [ "lru" ], default = "lru", help = "Page preemption strategy to choose. Can be one of %(choices)s, defaults to %(default)s.")
+parser.add_argument("-s", "--page-pool-size", metavar = "pages", type = int, default = 19, help = "Pages to assume to be in page pool. Defaults to %(default)d pages.")
+parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
+parser.add_argument("dumpfile", help = "Dump text file, one line that contains JSON data.")
+args = parser.parse_args(sys.argv[1:])
+
+live_pages = [ ]
+fault_count = 0
+
+with open(args.dumpfile) as f:
+	for line in f:
+		data = json.loads(line)
+
+		# Index of requested page. Technically, this is not true, because we're
+		# dumping data at the *entry* of the fault handler, so we're seeing the
+		# page that was actually paged in the *previous* call of the fault
+		# handler. Should not matter for approximation, however.
+		pageidx = data["pager_struct"][-1]["fobj_pgidx"]
+
+		if pageidx not in live_pages:
+			fault_count += 1
+		else:
+			# Page in page cache, no fault.
+			continue
+
+		if args.preemption_strategy == "lru":
+			if len(live_pages) >= args.page_pool_size:
+				# Need to preempt last recently used pages
+				live_pages.pop(0)
+
+			# Page in the new page
+			live_pages.append(pageidx)
+		else:
+			raise NotImplementedError(args.preemption_strategy)
+
+print(f"Page faults: {fault_count}")

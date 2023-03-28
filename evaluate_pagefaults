@@ -1,0 +1,88 @@
+#!/usr/bin/python3
+#	opteetk - Tools for easier debugging of OP-TEE
+#	Copyright (C) 2023-2023 Johannes Bauer
+#
+#	This file is part of opteetk.
+#
+#	opteetk is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	opteetk is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with opteetk; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import sys
+import json
+import re
+import collections
+import subprocess
+from FriendlyArgumentParser import FriendlyArgumentParser
+
+parser = FriendlyArgumentParser(description = "Plot a pagetable dump.")
+parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
+parser.add_argument("dumpfile", help = "Dump text file, one line that contains JSON data.")
+args = parser.parse_args(sys.argv[1:])
+
+
+symbol_data = subprocess.check_output([ "nm", "-S", "/home/joe/tee.elf" ]).decode()
+symbols_in_page = collections.defaultdict(set)
+symbol_regex = re.compile("^(?P<offset>[0-9a-f]+)\s+(?P<size>[0-9a-f]+)\s+(?P<type>.)\s+(?P<name>.*)$", flags = re.MULTILINE)
+for symbol_match in symbol_regex.finditer(symbol_data):
+	symbol_match = symbol_match.groupdict()
+	offset = int(symbol_match["offset"], 16)
+	size = int(symbol_match["size"], 16)
+	name = symbol_match["name"]
+	for page_offset in range(offset, offset + size, 4096):
+		page_addr = page_offset & ~0xfff
+		symbols_in_page[page_addr].add(name)
+symbols_in_page = { addr: " ".join(sorted(items)) for (addr, items) in symbols_in_page.items() }
+
+def convert_pager_entry(pager_entry):
+	pgidx = pager_entry["fobj_pgidx"]
+	if (pgidx >> 31) & 1:
+		pgidx = -(2 ** 32) + pgidx
+	if pgidx < 0:
+		addr = 0
+	else:
+		addr = pager_entry["fobj"] + 4096 * pgidx
+	page_addr = addr & ~0xfff
+	symbols = symbols_in_page.get(page_addr, "?")
+	return {
+		"pgidx": pgidx,
+		"addr": addr,
+		"page_addr": page_addr,
+		"symbols": symbols,
+	}
+
+
+
+def dump_pager_struct(pager_struct):
+	print(f"{len(pager_struct)} entries:")
+	for (index, entry) in enumerate(pager_struct):
+		entry = convert_pager_entry(entry)
+		print(f"   {index:2d}) {entry['addr']:#10x} {entry['symbols']}")
+	print()
+
+ctr = collections.Counter()
+with open(args.dumpfile) as f:
+	for line in f:
+		data = json.loads(line)
+#		dump_pager_struct(data["pager_struct"])
+
+		new_item = data["pager_struct"][-1]
+		entry = convert_pager_entry(new_item)
+		ctr[entry["page_addr"]] += 1
+
+cumulative = 0
+for (addr, hitcount) in ctr.most_common():
+	cumulative += hitcount
+	print(f"{addr:#10x} {hitcount:6d} {cumulative:6d} {symbols_in_page.get(addr, '?')}")

@@ -150,13 +150,17 @@ class OpteeBuilder():
 	def _start_gdb(self):
 		cmd = [ "gnome-terminal", "--tab", "--" ]
 		with open(self.gdb_command_file, "w") as f:
-			print("define conn", file = f)
+			print("define optee-connect", file = f)
 			print("target remote localhost:1234", file = f)
 			print("end", file = f)
 			print(file = f)
 			print(f"symbol-file {self.target_dir}/optee_os/out/arm/core/tee.elf", file = f)
 			print("set remotetimeout 300", file = f)
-			print("conn", file = f)
+			for command in self._args.gdb_command:
+				print(command, file = f)
+			print("optee-connect", file = f)
+			if self._args.autorun_cpu:
+				print("c", file = f)
 
 		cmd += [ f"{self.target_dir}/toolchains/aarch32/bin/arm-linux-gnueabihf-gdb", "-q", "-x", self.gdb_command_file ]
 		subprocess.call(cmd, preexec_fn = self._set_pdeathsig)
@@ -187,6 +191,7 @@ parser.add_argument("-s", "--serial-config", choices = [ "default", "listen", "n
 parser.add_argument("-r", "--autorun-cpu", action = "store_true", help = "Do not halt CPU at first start, but immediately commence boot.")
 parser.add_argument("-n", "--no-rebuild", action = "store_true", help = "Do not rebuild OP-TEE code, just run QEMU.")
 parser.add_argument("-g", "--attach-gdb", action = "store_true", help = "Attach a debugger immediately in its own terminal.")
+parser.add_argument("-G", "--gdb-command", action = "append", default = [ ], help = "Execute this debugger command when creating a gdb session. Can be specified multiple times.")
 parser.add_argument("-l", "--link-dir", metavar = "dirname", default = "links", help = "Directory to create symbolic links to. Defaults to %(default)s.")
 parser.add_argument("-o", "--sync-into-overlay", metavar = "dirname", help = "Before building an image, rsync the given directory as an overlay.")
 parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
